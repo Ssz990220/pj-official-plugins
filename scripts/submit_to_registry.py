@@ -31,7 +31,6 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from release_tools import (
     compute_sha256_bytes,
-    id_to_class_name,
     normalize_platform,
     read_manifest,
     validate_manifest_file,
@@ -214,31 +213,7 @@ def build_registry_entry(manifest: dict, platforms: dict) -> dict:
         if field in manifest:
             entry[field] = manifest[field]
 
-    # Add plugins array (from manifest or generate default)
-    if "plugins" in manifest:
-        entry["plugins"] = manifest["plugins"]
-    else:
-        # Generate default plugins entry
-        extension_id = manifest["id"]
-        category = manifest.get("category", "parser")
-        entry["plugins"] = [
-            {
-                "name": id_to_class_name(extension_id),
-                "type": category,
-                "library": extension_id,
-            }
-        ]
-
     entry["platforms"] = platforms
-
-    # Add changelog (from manifest or generate default)
-    if "changelog" in manifest:
-        entry["changelog"] = manifest["changelog"]
-    else:
-        version = manifest["version"]
-        entry["changelog"] = {
-            version: f"Release v{version}"
-        }
 
     return entry
 
@@ -275,11 +250,10 @@ def update_registry(registry: dict, entry: dict) -> dict:
         # Add new entry
         extensions.append(entry)
 
+    # Sort extensions alphabetically by id
+    extensions.sort(key=lambda x: x.get("id", ""))
+
     registry["extensions"] = extensions
-    registry["last_updated"] = subprocess.run(
-        ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"],
-        capture_output=True, text=True, check=True
-    ).stdout.strip()
 
     return registry
 
@@ -329,6 +303,15 @@ def create_registry_pr(entry: dict, dry_run: bool = False) -> str:
         check=True,
     )
     branch_sha = result.stdout.strip()
+
+    # Delete branch if it already exists (from a previous failed attempt)
+    subprocess.run(
+        ["gh", "api", f"repos/{REGISTRY_REPO}/git/refs/heads/{branch_name}",
+         "-X", "DELETE"],
+        capture_output=True,
+        text=True,
+        check=False,  # Ignore errors if branch doesn't exist
+    )
 
     # Create branch
     print(f"  Creating branch {branch_name}...")
