@@ -1,4 +1,5 @@
 #include <pj_base/sdk/data_source_patterns.hpp>
+#include <pj_plugins/sdk/encoding_utils.hpp>
 
 #include "mqtt_dialog.hpp"
 #include "mqtt_manifest.hpp"
@@ -34,9 +35,14 @@ class MqttSource : public PJ::StreamSourceBase {
   std::string saveConfig() const override { return dialog_.saveConfig(); }
 
   PJ::Status loadConfig(std::string_view config_json) override {
-    if (!dialog_.loadConfig(config_json)) {
-      return PJ::unexpected(std::string("invalid config JSON"));
+    // Always populate available encodings first (needed even if config is empty)
+    dialog_.setAvailableEncodings(PJ::sdk::parseEncodingsJson(runtimeHost().listAvailableEncodings()));
+
+    // Load config if provided (empty config on first run is OK)
+    if (!config_json.empty()) {
+      (void)dialog_.loadConfig(config_json);  // Ignore errors, use defaults
     }
+
     return PJ::okStatus();
   }
 
@@ -81,7 +87,7 @@ class MqttSource : public PJ::StreamSourceBase {
             m.payload.assign(
                 reinterpret_cast<const uint8_t*>(payload.data()),
                 reinterpret_cast<const uint8_t*>(payload.data()) + payload.size());
-            auto now = std::chrono::system_clock::now().time_since_epoch();
+            auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
             m.timestamp_ns =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
 

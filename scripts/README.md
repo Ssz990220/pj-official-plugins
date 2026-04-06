@@ -54,25 +54,27 @@ Choose the automation level that fits your needs:
 
 ### Option A: Fully Automatic (Recommended)
 
-One command does everything: creates the tag, CI builds all platforms, and automatically submits to the registry.
+One command does everything: bumps version, commits, creates tag, CI builds all platforms, and automatically submits to the registry.
 
 ```bash
-# 1. Update version in manifest.json
-vim data_load_csv/manifest.json
-# Change "version": "1.0.5" to "1.0.6"
+# Single command: bump version, commit, tag, push, auto-submit
+python3 scripts/release_extension.py csv-loader --bump patch --submit-to-registry
 
-# 2. Commit and push the version bump
-git add data_load_csv/manifest.json
-git commit -m "Bump csv-loader to v1.0.6"
-git push
+# Or bump minor/major version
+python3 scripts/release_extension.py csv-loader --bump minor --submit-to-registry
+python3 scripts/release_extension.py csv-loader --bump major --submit-to-registry
 
-# 3. Release with auto-submit
-python3 scripts/release_extension.py csv-loader --submit-to-registry
+# Or set explicit version
+python3 scripts/release_extension.py csv-loader --version 2.0.0 --submit-to-registry
 
-# Done! CI will:
-#   - Build for all 6 platforms
-#   - Create GitHub release with artifacts
-#   - Automatically create PR to registry
+# Done! The script will:
+#   - Update manifest.json with new version
+#   - Commit the change
+#   - Create annotated tag
+#   - Push to GitHub (triggers CI)
+#   - CI builds all 6 platforms
+#   - CI creates GitHub release with artifacts
+#   - CI automatically creates PR to registry
 ```
 
 ### Option B: Two-Step (Release + Submit Separately)
@@ -97,7 +99,29 @@ python3 scripts/release_extension.py csv-loader
 python3 scripts/submit_to_registry.py csv-loader
 ```
 
-### Option C: Fully Manual (Create Tags by Hand)
+### Option C: Tag-Only (Manifest Already Updated)
+
+When the manifest already has the correct version (e.g., version was bumped in a previous commit), use the script without `--bump` or `--version` to create only the tag.
+
+```bash
+# Manifest already has version 1.2.0 committed to main
+# Just create tag and trigger CI
+
+python3 scripts/release_extension.py csv-loader --submit-to-registry
+
+# The script will:
+#   - Read version from manifest.json (e.g., 1.2.0)
+#   - Create annotated tag data_load_csv/v1.2.0
+#   - Push to GitHub → triggers CI
+#   - NO manifest update, NO new commit
+```
+
+**Use cases:**
+- Version was bumped in a hotfix commit
+- Multiple plugins need releasing after a batch version update
+- Re-creating tags after cleanup (deleted tags, failed releases)
+
+### Option D: Fully Manual (Create Tags by Hand)
 
 Maximum control. Useful for debugging or special releases.
 
@@ -258,10 +282,28 @@ Arguments:
   source                   Source directory (data_load_csv) or extension id (csv-loader)
 
 Options:
-  --submit-to-registry     Auto-submit to registry after CI builds complete
+  --bump TYPE              Bump version automatically:
+                             patch: 1.0.5 -> 1.0.6
+                             minor: 1.0.5 -> 1.1.0
+                             major: 1.0.5 -> 2.0.0
+  --version VERSION        Set explicit version (e.g., 2.0.0)
+  --submit-to-registry     Submit to registry after CI builds complete
   --dry-run                Show what would be done without making changes
   --remote NAME            Git remote to push to (default: auto-detect GitHub)
   --token TOKEN            GitHub token (or set GITHUB_TOKEN env var)
+
+Examples:
+  # Bump patch version and auto-submit
+  python3 scripts/release_extension.py csv-loader --bump patch --submit-to-registry
+
+  # Set specific version
+  python3 scripts/release_extension.py csv-loader --version 2.0.0 --submit-to-registry
+
+  # Tag-only: manifest already has correct version, just create tag
+  python3 scripts/release_extension.py csv-loader --submit-to-registry
+
+  # Preview what would happen
+  python3 scripts/release_extension.py csv-loader --bump minor --dry-run
 ```
 
 ### `submit_to_registry.py`
