@@ -84,7 +84,9 @@ std::optional<FftResult> computeFFT(const int64_t* timestamps, const double* val
 
 class FFTDialog : public PJ::DialogPluginTyped {
  public:
-  std::string manifest() const override { return kFftManifest; }
+  std::string manifest() const override {
+    return R"({"name":"Fast Fourier Transform","version":"1.0.0"})";
+  }
 
   std::string ui_content() const override { return kFftDialogUi; }
 
