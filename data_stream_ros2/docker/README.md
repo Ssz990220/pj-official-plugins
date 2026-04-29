@@ -33,7 +33,7 @@ These images cover two roles:
 ## Why two Docker images
 
 The proxy `.so` must NOT depend on `librclcpp` — that is the whole point of
-the dispatch design. Building it inside any `osrf/ros:*-desktop` image would
+the dispatch design. Building it inside any `ros:*-ros-base` image would
 risk pulling ROS symbols transitively through `CMAKE_PREFIX_PATH` or system
 libraries. A plain Ubuntu 22.04 image with no ROS installed enforces the
 constraint by construction.
