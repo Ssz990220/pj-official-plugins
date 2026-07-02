@@ -104,7 +104,11 @@ inline ChannelRoute classifyChannel(const ChannelInfo& ch) {
   // Protobuf wire messages with a base64 FileDescriptorSet schema. The schema
   // MAY be empty for the well-known foxglove.* types, which parser_protobuf
   // recognizes by name and decodes without a descriptor.
-  if (ch.encoding == "protobuf" && ch.schema_encoding == "protobuf") {
+  // schemaEncoding is optional in the ws-protocol spec: when a server omits
+  // it, a protobuf-encoded channel's schema is a FileDescriptorSet by
+  // definition, so treat the empty value as "protobuf".
+  if (ch.encoding == "protobuf" &&
+      (ch.schema_encoding == "protobuf" || ch.schema_encoding.empty())) {
     return {true, "protobuf", /*schema_is_base64=*/true};
   }
   return {};
