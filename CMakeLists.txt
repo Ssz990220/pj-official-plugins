@@ -81,6 +81,13 @@ else()
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     list(APPEND PJ_WARNING_FLAGS -Wno-error=stringop-overflow -Wno-error=array-bounds)
   endif()
+  # AppleClang (unofficial macOS build): the strict warning set was tuned for
+  # GCC/CI and has never been compiled clean with Clang. Keep warnings visible
+  # but non-fatal rather than fixing the fallout one-by-one on a non-CI platform.
+  # Mirrors the identical carve-out in plotjuggler_sdk's CMakeLists.txt.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    list(APPEND PJ_WARNING_FLAGS -Wno-error)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
