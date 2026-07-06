@@ -92,6 +92,11 @@ class FoxgloveSource : public PJ::StreamSourceBase {
       socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
       socket_->addSubProtocol("foxglove.sdk.v1");
       socket_->disableAutomaticReconnection();
+      // Send a WebSocket ping every 20s so an idle subscription stays alive.
+      // Without it the connection to dex-bus was observed dropping at ~35s
+      // ("Foxglove bridge connection lost"), consistent with a ~30s server-side
+      // idle/keepalive timeout; ixwebsocket sends no client pings by default.
+      socket_->setPingInterval(20);
       socket_->start();
 
       auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);

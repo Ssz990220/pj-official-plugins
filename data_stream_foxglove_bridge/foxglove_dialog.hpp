@@ -255,6 +255,13 @@ class FoxgloveDialog : public PJ::DialogPluginTyped {
     socket_ = std::make_unique<ix::WebSocket>();
     socket_->setUrl("ws://" + address_ + ":" + std::to_string(port_));
     socket_->addSubProtocol("foxglove.sdk.v1");
+    // Send a WebSocket ping every 20s to keep the connection alive. This socket is
+    // stolen by the streaming source on accept (takeSocket()), so the keepalive
+    // set here is what protects the live session — without it the dex-bus link was
+    // seen dropping at ~35s (a ~30s server-side idle timeout); ixwebsocket sends
+    // no client pings by default. Must be set before start(). Mirrored in
+    // foxglove_source.cpp's fresh-connect fallback.
+    socket_->setPingInterval(20);
 
     socket_->setOnMessageCallback([this](const ix::WebSocketMessagePtr& msg) {
       if (msg->type == ix::WebSocketMessageType::Open) {
