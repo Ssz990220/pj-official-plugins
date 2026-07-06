@@ -1,11 +1,14 @@
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/descriptor.pb.h>
+#include <google/protobuf/duration.pb.h>
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/reflection.h>
+#include <google/protobuf/timestamp.pb.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -20,6 +23,7 @@
 #include <pj_plugins/sdk/message_parser_plugin_base.hpp>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "foxglove_object_codecs.hpp"
@@ -31,6 +35,71 @@
 namespace gp = google::protobuf;
 
 namespace {
+
+// Force the well-known descriptors that Foxglove schemas import (Timestamp,
+// Duration) into the linked image so DescriptorPool::generated_pool() can serve
+// them as an underlay. A producer may reference google.protobuf.* WITHOUT bundling
+// their .proto in the FileDescriptorSet (protoc without --include_imports); without
+// an explicit symbol reference the static-archive members that register these
+// descriptors are dead-stripped and the generated pool would not know them.
+[[maybe_unused]] const bool kLinkWellKnownDescriptors =
+    (gp::Timestamp::descriptor() != nullptr) && (gp::Duration::descriptor() != nullptr);
+
+// Build every file of a FileDescriptorSet into `pool` in dependency (topological)
+// order. A FileDescriptorSet is NOT guaranteed to be topologically sorted: some
+// producers (notably a Foxglove WebSocket bridge advertising foxglove.* channels)
+// list a dependent file BEFORE the file it imports. DescriptorPool::BuildFile
+// requires every import to already be present, so a naive in-order loop fails
+// with "Import ... has not been loaded" / "... is not defined" and the whole
+// schema is rejected (dropping the topic entirely, or forcing the foxglove codecs
+// onto default field numbers). Adding each file only after its dependencies fixes
+// that regardless of the order the set happens to be in.
+//
+// `pool` is expected to be constructed with the generated pool as its underlay.
+// Well-known google.protobuf.* files referenced as imports but absent from the
+// set then resolve from that underlay; files that DO appear in the underlay are
+// skipped rather than rebuilt (rebuilding a same-named file would raise a
+// duplicate-symbol error against the underlay).
+void buildFilesInDependencyOrder(const gp::FileDescriptorSet& fd_set, gp::DescriptorPool& pool) {
+  std::unordered_map<std::string, const gp::FileDescriptorProto*> by_name;
+  by_name.reserve(static_cast<size_t>(fd_set.file_size()));
+  for (const auto& file : fd_set.file()) {
+    by_name.emplace(file.name(), &file);  // first occurrence wins; later duplicates ignored
+  }
+
+  const gp::DescriptorPool* underlay = gp::DescriptorPool::generated_pool();
+  std::unordered_set<std::string> done;
+  std::unordered_set<std::string> in_progress;  // guards against import cycles
+
+  std::function<void(const std::string&)> add = [&](const std::string& name) {
+    if (done.count(name) != 0) {
+      return;
+    }
+    // Provided by the underlay (a well-known type, or any generated file): let the
+    // import resolve to it instead of rebuilding a duplicate into `pool`.
+    if (underlay != nullptr && underlay->FindFileByName(name) != nullptr) {
+      done.insert(name);
+      return;
+    }
+    const auto it = by_name.find(name);
+    if (it == by_name.end()) {
+      return;  // unknown import: nothing to add here; BuildFile may still report it
+    }
+    if (!in_progress.insert(name).second) {
+      return;  // import cycle: stop recursing; BuildFile will surface any real error
+    }
+    for (const auto& dep : it->second->dependency()) {
+      add(dep);
+    }
+    in_progress.erase(name);
+    pool.BuildFile(*it->second);
+    done.insert(name);
+  };
+
+  for (const auto& file : fd_set.file()) {
+    add(file.name());
+  }
+}
 
 struct FlattenedField {
   std::string name;
@@ -380,13 +449,13 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       return PJ::unexpected(std::string("failed to parse FileDescriptorSet"));
     }
 
-    pool_ = std::make_unique<gp::DescriptorPool>();
+    // Underlay = the generated pool so imports of well-known google.protobuf.*
+    // types resolve even when the set omits them. Files are built in dependency
+    // order because a FileDescriptorSet may list a dependent before its import.
+    pool_ = std::make_unique<gp::DescriptorPool>(gp::DescriptorPool::generated_pool());
     factory_ = std::make_unique<gp::DynamicMessageFactory>(pool_.get());
 
-    for (int i = 0; i < fd_set.file_size(); ++i) {
-      const auto& file = fd_set.file(i);
-      pool_->BuildFile(file);
-    }
+    buildFilesInDependencyOrder(fd_set, *pool_);
 
     descriptor_ = pool_->FindMessageTypeByName(std::string(type_name));
     if (descriptor_ == nullptr) {
@@ -779,10 +848,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     if (!fd_set.ParseFromArray(schema.data(), static_cast<int>(schema.size()))) {
       return;
     }
-    gp::DescriptorPool pool;
-    for (int i = 0; i < fd_set.file_size(); ++i) {
-      pool.BuildFile(fd_set.file(i));
-    }
+    gp::DescriptorPool pool(gp::DescriptorPool::generated_pool());
+    buildFilesInDependencyOrder(fd_set, pool);
     const gp::Descriptor* descriptor = pool.FindMessageTypeByName(std::string(type_name));
     if (descriptor == nullptr) {
       // The schema was present but unbuildable (e.g. a dependency like

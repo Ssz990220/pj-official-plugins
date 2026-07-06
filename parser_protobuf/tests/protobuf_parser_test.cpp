@@ -2870,3 +2870,156 @@ TEST(ProtobufParserTest, FoxgloveOdometryHonorsVariantSchemaFieldNumbers) {
   EXPECT_DOUBLE_EQ(pf->poses[0].position.z, 6.0);
   EXPECT_DOUBLE_EQ(pf->poses[0].orientation.w, 1.0);
 }
+
+// ---------------------------------------------------------------------------
+// Regression: a FileDescriptorSet whose files are NOT topologically sorted.
+//
+// dex-bus (and other Foxglove WebSocket bridges) advertise protobuf channels
+// whose embedded FileDescriptorSet lists a DEPENDENT file before the file it
+// imports, and reference the well-known google.protobuf.Timestamp without
+// bundling google/protobuf/timestamp.proto. A naive in-order BuildFile loop then
+// fails with "Import ... has not been loaded" / ".google.protobuf.Timestamp is
+// not defined", the descriptor is never found, and the whole topic fails to bind
+// (dropped). buildFilesInDependencyOrder() must build in dependency order and
+// resolve well-knowns from the generated pool underlay.
+namespace {
+
+// b.proto (message demo.Outer) is emitted BEFORE a.proto (message demo.Inner),
+// and google/protobuf/timestamp.proto is intentionally omitted.
+gp::FileDescriptorSet buildOutOfOrderFdSet() {
+  gp::FileDescriptorProto a_proto;  // the DEPENDENCY
+  a_proto.set_name("a.proto");
+  a_proto.set_package("demo");
+  a_proto.set_syntax("proto3");
+  {
+    auto* inner = a_proto.add_message_type();
+    inner->set_name("Inner");
+    auto* v = inner->add_field();
+    v->set_name("value");
+    v->set_number(1);
+    v->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+    v->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  }
+
+  gp::FileDescriptorProto b_proto;  // the DEPENDENT
+  b_proto.set_name("b.proto");
+  b_proto.set_package("demo");
+  b_proto.set_syntax("proto3");
+  b_proto.add_dependency("a.proto");
+  b_proto.add_dependency("google/protobuf/timestamp.proto");
+  {
+    auto* outer = b_proto.add_message_type();
+    outer->set_name("Outer");
+    auto* inner_field = outer->add_field();
+    inner_field->set_name("inner");
+    inner_field->set_number(1);
+    inner_field->set_type(gp::FieldDescriptorProto::TYPE_MESSAGE);
+    inner_field->set_type_name(".demo.Inner");
+    inner_field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    auto* stamp_field = outer->add_field();
+    stamp_field->set_name("stamp");
+    stamp_field->set_number(2);
+    stamp_field->set_type(gp::FieldDescriptorProto::TYPE_MESSAGE);
+    stamp_field->set_type_name(".google.protobuf.Timestamp");
+    stamp_field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    auto* temp_field = outer->add_field();
+    temp_field->set_name("temp");
+    temp_field->set_number(3);
+    temp_field->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+    temp_field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+  }
+
+  gp::FileDescriptorSet fd_set;
+  *fd_set.add_file() = b_proto;  // dependent listed FIRST (the bug trigger)
+  *fd_set.add_file() = a_proto;
+  return fd_set;
+}
+
+}  // namespace
+
+TEST(ProtobufParserTest, OutOfOrderFileDescriptorSet) {
+  ProtobufParserFixture f;
+  f.setUp();
+
+  const gp::FileDescriptorSet fd_set = buildOutOfOrderFdSet();
+  std::string schema;
+  ASSERT_TRUE(fd_set.SerializeToString(&schema));
+
+  // With the naive in-order loop this bind FAILS (Outer imports the later-listed
+  // a.proto and an omitted well-known); the dependency-ordered build makes it bind.
+  ASSERT_TRUE(f.bindSchema("demo.Outer", schema)) << "out-of-order FDS must still bind demo.Outer";
+
+  // Serialize a demo.Outer{ inner{value:2.5}, temp:7.5 } from a correctly-ordered
+  // pool (generated-pool underlay resolves google.protobuf.Timestamp).
+  gp::DescriptorPool pool(gp::DescriptorPool::generated_pool());
+  {
+    gp::FileDescriptorProto a_proto;
+    a_proto.set_name("a.proto");
+    a_proto.set_package("demo");
+    a_proto.set_syntax("proto3");
+    auto* inner = a_proto.add_message_type();
+    inner->set_name("Inner");
+    auto* v = inner->add_field();
+    v->set_name("value");
+    v->set_number(1);
+    v->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+    v->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    ASSERT_NE(pool.BuildFile(a_proto), nullptr);
+  }
+  const gp::FileDescriptor* b_desc = nullptr;
+  {
+    gp::FileDescriptorProto b_proto;
+    b_proto.set_name("b.proto");
+    b_proto.set_package("demo");
+    b_proto.set_syntax("proto3");
+    b_proto.add_dependency("a.proto");
+    // No timestamp dependency: this local pool only SERIALIZES a payload (inner +
+    // temp). The omitted-Timestamp underlay path is exercised on the plugin side
+    // (buildOutOfOrderFdSet), whose dylib force-links the well-known descriptors.
+    auto* outer = b_proto.add_message_type();
+    outer->set_name("Outer");
+    auto* inner_field = outer->add_field();
+    inner_field->set_name("inner");
+    inner_field->set_number(1);
+    inner_field->set_type(gp::FieldDescriptorProto::TYPE_MESSAGE);
+    inner_field->set_type_name(".demo.Inner");
+    inner_field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    auto* temp_field = outer->add_field();
+    temp_field->set_name("temp");
+    temp_field->set_number(3);
+    temp_field->set_type(gp::FieldDescriptorProto::TYPE_DOUBLE);
+    temp_field->set_label(gp::FieldDescriptorProto::LABEL_OPTIONAL);
+    b_desc = pool.BuildFile(b_proto);
+    ASSERT_NE(b_desc, nullptr);
+  }
+  const gp::Descriptor* outer_desc = pool.FindMessageTypeByName("demo.Outer");
+  const gp::Descriptor* inner_desc = pool.FindMessageTypeByName("demo.Inner");
+  ASSERT_NE(outer_desc, nullptr);
+  ASSERT_NE(inner_desc, nullptr);
+
+  gp::DynamicMessageFactory factory;
+  std::unique_ptr<gp::Message> outer_msg(factory.GetPrototype(outer_desc)->New());
+  const gp::Reflection* ref = outer_msg->GetReflection();
+  gp::Message* inner_msg = ref->MutableMessage(outer_msg.get(), outer_desc->FindFieldByName("inner"));
+  inner_msg->GetReflection()->SetDouble(inner_msg, inner_desc->FindFieldByName("value"), 2.5);
+  ref->SetDouble(outer_msg.get(), outer_desc->FindFieldByName("temp"), 7.5);
+
+  std::string payload;
+  ASSERT_TRUE(outer_msg->SerializeToString(&payload));
+  ASSERT_TRUE(f.parse(payload));
+
+  ASSERT_FALSE(f.recorder.rows().empty());
+  bool found_inner = false;
+  bool found_temp = false;
+  for (const auto& field : f.recorder.rows()[0].fields) {
+    if (field.name == "inner/value") {
+      EXPECT_DOUBLE_EQ(field.numeric, 2.5);
+      found_inner = true;
+    } else if (field.name == "temp") {
+      EXPECT_DOUBLE_EQ(field.numeric, 7.5);
+      found_temp = true;
+    }
+  }
+  EXPECT_TRUE(found_inner) << "nested demo.Inner.value did not decode (dependency not built)";
+  EXPECT_TRUE(found_temp);
+}
