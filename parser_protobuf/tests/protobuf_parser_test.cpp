@@ -3113,3 +3113,105 @@ TEST(ProtobufParserTest, RealSceneUpdate28EntitiesFromUserMcap) {
   EXPECT_EQ(scene->entities.back().id, "right_target@right_gripper-iris@debug_traj_0");
   EXPECT_EQ(scene->entities.back().frame_id, "right_target@right_wrist_3@debug_traj_0");
 }
+
+// ---------------------------------------------------------------------------
+// End-to-end regression on a REAL FrameTransforms batch captured from the user's
+// mcap: 17 transforms, every edge "display" -> <child>. Before FrameTransforms
+// (plural) was a first-class type, these topics classified as kNone (scalar-only
+// ingest), so scene3D's TransformService had nothing to fold into the
+// TransformBuffer and every entity frame orphaned. This asserts the plural type
+// (a) classifies as kFrameTransforms a-priori and (b) decodes ALL 17 edges.
+TEST(ProtobufParserTest, RealFrameTransforms17FromUserMcap) {
+  const std::string fds = readFixtureBytes("frametransforms_schema.fds");
+  const std::string payload = readFixtureBytes("frametransforms_17.bin");
+  ASSERT_EQ(fds.size(), 915u);
+  ASSERT_EQ(payload.size(), 1970u);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.FrameTransforms", fds))
+      << "binding the real FrameTransforms FileDescriptorSet must succeed cleanly";
+
+  // (a) A-priori classification must be kFrameTransforms(6) — this is what routes
+  // the topic to object ingest and, downstream, into scene3D's TransformService.
+  const auto kind = f.handle.classifySchema(
+      "foxglove.FrameTransforms",
+      PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(fds.data()), fds.size()));
+  EXPECT_EQ(kind, PJ::sdk::BuiltinObjectType::kFrameTransforms)
+      << "FrameTransforms must classify as kFrameTransforms (was kNone -> orphaned frames)";
+
+  // (b) The whole batch must decode.
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto rec = base->parseObject(
+      1234, {PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()), anchor});
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* tfs = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(tfs, nullptr) << "FrameTransforms did not decode to sdk::FrameTransforms";
+
+  size_t parent_display = 0;
+  size_t nonempty_child = 0;
+  std::set<std::string> distinct_children;
+  for (const auto& t : tfs->transforms) {
+    if (t.parent_frame_id == "display") {
+      ++parent_display;
+    }
+    if (!t.child_frame_id.empty()) {
+      ++nonempty_child;
+      distinct_children.insert(t.child_frame_id);
+    }
+  }
+  std::cout << "[fixture] transforms=" << tfs->transforms.size() << " parent==display=" << parent_display
+            << " distinct_children=" << distinct_children.size() << "\n";
+  for (size_t i = 0; i < tfs->transforms.size() && i < 3; ++i) {
+    std::cout << "[fixture] tf[" << i << "] '" << tfs->transforms[i].parent_frame_id << "' -> '"
+              << tfs->transforms[i].child_frame_id << "'\n";
+  }
+
+  EXPECT_EQ(tfs->transforms.size(), 17u) << "all 17 transforms must decode (codec must not truncate the batch)";
+  EXPECT_EQ(parent_display, 17u) << "every edge's parent_frame_id is 'display'";
+  EXPECT_EQ(nonempty_child, 17u) << "every transform carries a child_frame_id";
+  EXPECT_EQ(distinct_children.size(), 17u) << "child frame ids intact and unique";
+}
+
+// Fallback path: bind FrameTransforms with an EMPTY schema (a streaming source
+// with no embedded descriptor). resolveFoxgloveFieldNumbers returns early, so the
+// codec runs on the OFFICIAL default field numbers. A batch encoded with official
+// numbering must still fully decode — mirrors how SceneUpdate falls back.
+TEST(ProtobufParserTest, FrameTransformsFallbackDefaultFieldNumbers) {
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.FrameTransforms", std::string{}))
+      << "well-known FrameTransforms must bind even with no embedded schema";
+
+  // Still classifies as kFrameTransforms via the registered handler.
+  EXPECT_EQ(f.handle.classifySchema("foxglove.FrameTransforms",
+                                    PJ::Span<const uint8_t>(static_cast<const uint8_t*>(nullptr), size_t{0})),
+            PJ::sdk::BuiltinObjectType::kFrameTransforms);
+
+  // Official FrameTransforms wire: transforms=1 (repeated); FrameTransform
+  // parent_frame_id=2, child_frame_id=3.
+  PW t1;
+  t1.str(2, "display");
+  t1.str(3, "child_a");
+  PW t2;
+  t2.str(2, "display");
+  t2.str(3, "child_b");
+  PW batch;
+  batch.sub(1, t1);
+  batch.sub(1, t2);
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto rec = base->parseObject(1234, {PJ::Span<const uint8_t>(batch.b.data(), batch.b.size()), anchor});
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+  const auto* tfs = std::any_cast<PJ::sdk::FrameTransforms>(&rec->object);
+  ASSERT_NE(tfs, nullptr);
+  ASSERT_EQ(tfs->transforms.size(), 2u);
+  EXPECT_EQ(tfs->transforms[0].parent_frame_id, "display");
+  EXPECT_EQ(tfs->transforms[0].child_frame_id, "child_a");
+  EXPECT_EQ(tfs->transforms[1].parent_frame_id, "display");
+  EXPECT_EQ(tfs->transforms[1].child_frame_id, "child_b");
+}

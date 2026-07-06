@@ -9,7 +9,8 @@
 // google::protobuf's CodedInputStream instead of the reflection/descriptor pool.
 //
 // Mapping (foxglove schema -> sdk builtin object -> BuiltinObjectType):
-//   foxglove.FrameTransform     -> sdk::FrameTransforms  (kFrameTransforms)
+//   foxglove.FrameTransform     -> sdk::FrameTransforms  (kFrameTransforms) [one element]
+//   foxglove.FrameTransforms    -> sdk::FrameTransforms  (kFrameTransforms) [batch: all edges]
 //   foxglove.CompressedImage    -> sdk::Image            (kImage)          [zero-copy data]
 //   foxglove.CameraCalibration  -> sdk::CameraInfo       (kCameraInfo)
 //   foxglove.ImageAnnotations   -> sdk::ImageAnnotations (kImageAnnotations)
@@ -104,6 +105,15 @@ struct FrameTransformFieldNumbers {
 [[nodiscard]] FrameTransformFieldNumbers resolveFrameTransformFieldNumbers(
     const google::protobuf::Descriptor* descriptor);
 
+/// Field numbers for foxglove.FrameTransforms { repeated FrameTransform transforms = 1 }.
+/// Carries the inner FrameTransform numbering too, resolved from the nested descriptor.
+struct FrameTransformsFieldNumbers {
+  int transforms = 1;
+  FrameTransformFieldNumbers transform;
+};
+[[nodiscard]] FrameTransformsFieldNumbers resolveFrameTransformsFieldNumbers(
+    const google::protobuf::Descriptor* descriptor);
+
 /// Field numbers for foxglove.Odometry. Only the fields needed for the canonical
 /// single-pose object are tracked: the reference frame (`frame_id`) and the
 /// `pose` (the velocities, covariances, body_frame_id and metadata are skipped).
@@ -162,6 +172,12 @@ struct SceneUpdateFieldNumbers {
 /// vector, so the result holds exactly one element.
 [[nodiscard]] PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
     const uint8_t* data, size_t size, const FrameTransformFieldNumbers& fields = {});
+
+/// foxglove.FrameTransforms is a BATCH: `repeated FrameTransform transforms`.
+/// Decodes every transform into the SDK object — this is what real Foxglove
+/// bridges publish for a TF tree, so all edges must survive.
+[[nodiscard]] PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransforms(
+    const uint8_t* data, size_t size, const FrameTransformsFieldNumbers& fields = {});
 
 /// foxglove.Odometry -> sdk::PosesInFrame holding exactly one pose (the pose of
 /// body_frame_id expressed in frame_id). The velocities, covariances and metadata

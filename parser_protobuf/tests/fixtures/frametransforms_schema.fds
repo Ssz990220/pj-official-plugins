@@ -1,0 +1,34 @@
+
+È
+foxglove/FrameTransform.protofoxglovefoxglove/Quaternion.protofoxglove/Vector3.protogoogle/protobuf/timestamp.proto"À
+FrameTransform-
+	timestamp (2.google.protobuf.Timestamp
+parent_frame_id (	
+child_frame_id (	&
+translation (2.foxglove.Vector3&
+rotation (2.foxglove.Quaternionbproto3
+’
+foxglove/FrameTransforms.protofoxglovefoxglove/FrameTransform.proto"?
+FrameTransforms,
+
+transforms (2.foxglove.FrameTransformbproto3
+g
+foxglove/Quaternion.protofoxglove"8
+
+Quaternion	
+x (	
+y (	
+z (	
+w (bproto3
+V
+foxglove/Vector3.protofoxglove"*
+Vector3	
+x (	
+y (	
+z (bproto3
+ï
+google/protobuf/timestamp.protogoogle.protobuf"+
+	Timestamp
+seconds (
+nanos (B…
+com.google.protobufBTimestampProtoPZ2google.golang.org/protobuf/types/known/timestamppbø¢GPBªGoogle.Protobuf.WellKnownTypesbproto3

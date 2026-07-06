@@ -424,10 +424,10 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
     // directly and bypass the descriptor pool. Crucially, promoting these stops
     // the generic scalar-flatten of their large nested arrays (a Foxglove scene
     // / annotation message flattens to a pathological number of scalar series).
-    if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.CompressedImage" ||
-        type_name == "foxglove.RawImage" || type_name == "foxglove.CameraCalibration" ||
-        type_name == "foxglove.ImageAnnotations" || type_name == "foxglove.SceneUpdate" ||
-        type_name == "foxglove.VoxelGrid") {
+    if (type_name == "foxglove.FrameTransform" || type_name == "foxglove.FrameTransforms" ||
+        type_name == "foxglove.CompressedImage" || type_name == "foxglove.RawImage" ||
+        type_name == "foxglove.CameraCalibration" || type_name == "foxglove.ImageAnnotations" ||
+        type_name == "foxglove.SceneUpdate" || type_name == "foxglove.VoxelGrid") {
       if (auto status = MessageParserPluginBase::bindSchema(type_name, schema); !status) {
         return status;
       }
@@ -869,6 +869,8 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
       camera_calibration_fields_ = pj_protobuf::resolveCameraCalibrationFieldNumbers(descriptor);
     } else if (type_name == "foxglove.FrameTransform") {
       frame_transform_fields_ = pj_protobuf::resolveFrameTransformFieldNumbers(descriptor);
+    } else if (type_name == "foxglove.FrameTransforms") {
+      frame_transforms_fields_ = pj_protobuf::resolveFrameTransformsFieldNumbers(descriptor);
     } else if (type_name == "foxglove.Odometry") {
       odometry_fields_ = pj_protobuf::resolveOdometryFieldNumbers(descriptor);
     } else if (type_name == "foxglove.ImageAnnotations") {
@@ -1049,6 +1051,34 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
         r.fields.push_back({.name = "data_size", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->data.size())}});
         return r;
       };
+    } else if (name == "foxglove.FrameTransforms") {
+      // Batch of transforms (the TF-tree form real bridges publish). Emits the
+      // SAME sdk::FrameTransforms / kFrameTransforms as the singular type, so the
+      // scene3D TransformService ingests every edge — not just the first.
+      handler.object_type = PJ::sdk::BuiltinObjectType::kFrameTransforms;
+      handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
+        auto obj =
+            pj_protobuf::deserializeFoxgloveFrameTransforms(p.bytes.data(), p.bytes.size(), frame_transforms_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());
+        }
+        std::optional<PJ::Timestamp> ts;
+        if (use_embedded_timestamp_ && !obj->transforms.empty() && obj->transforms.front().timestamp > 0) {
+          ts = obj->transforms.front().timestamp;
+        }
+        return PJ::sdk::ObjectRecord{.ts = ts, .object = PJ::sdk::BuiltinObject{std::move(*obj)}};
+      };
+      handler.parse_scalars =
+          [this](PJ::Timestamp, PJ::Span<const uint8_t> payload) -> PJ::Expected<PJ::sdk::ScalarRecord> {
+        auto obj = pj_protobuf::deserializeFoxgloveFrameTransforms(payload.data(), payload.size(), frame_transforms_fields_);
+        if (!obj) {
+          return PJ::unexpected(std::move(obj).error());  // surface, don't drop silently
+        }
+        PJ::sdk::ScalarRecord r;
+        r.fields.push_back(
+            {.name = "num_transforms", .value = PJ::sdk::ValueRef{static_cast<uint64_t>(obj->transforms.size())}});
+        return r;
+      };
     } else {  // foxglove.SceneUpdate
       handler.object_type = PJ::sdk::BuiltinObjectType::kSceneEntities;
       handler.parse_object = [this](PJ::Timestamp, PJ::sdk::PayloadView p) -> PJ::Expected<PJ::sdk::ObjectRecord> {
@@ -1094,6 +1124,7 @@ class ProtobufParser : public PJ::MessageParserPluginBase {
   pj_protobuf::CompressedImageFieldNumbers compressed_image_fields_;
   pj_protobuf::CameraCalibrationFieldNumbers camera_calibration_fields_;
   pj_protobuf::FrameTransformFieldNumbers frame_transform_fields_;
+  pj_protobuf::FrameTransformsFieldNumbers frame_transforms_fields_;
   pj_protobuf::OdometryFieldNumbers odometry_fields_;
   pj_protobuf::ImageAnnotationsFieldNumbers image_annotations_fields_;
   pj_protobuf::SceneUpdateFieldNumbers scene_update_fields_;

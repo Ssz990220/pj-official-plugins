@@ -463,6 +463,76 @@ PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransform(
 }
 
 // ===========================================================================
+// foxglove.FrameTransforms -> sdk::FrameTransforms
+// { repeated FrameTransform transforms = 1 } — the batch form real Foxglove
+// bridges publish for a TF tree. Every transform must survive: dropping any
+// leaves an entity frame orphaned in the 3D view.
+// ===========================================================================
+
+// Read one FrameTransform from a length-delimited submessage (the repeated
+// element of a FrameTransforms batch). Same field set as the singular decoder,
+// but nested, so it uses the shared lenient scanSubMessage/field* helpers that
+// respect the submessage's CodedInputStream limit.
+PJ::sdk::FrameTransform readFrameTransform(
+    CodedInputStream& in, uint32_t len, const FrameTransformFieldNumbers& fields) {
+  PJ::sdk::FrameTransform tf;
+  scanSubMessage(in, len, [&](int f, uint32_t w) {
+    if (f == fields.timestamp) {
+      return fieldMessage(in, w, tf.timestamp, readTimestampNs);
+    }
+    if (f == fields.parent_frame_id) {
+      return fieldString(in, w, tf.parent_frame_id);
+    }
+    if (f == fields.child_frame_id) {
+      return fieldString(in, w, tf.child_frame_id);
+    }
+    if (f == fields.translation) {
+      return fieldMessage(in, w, tf.translation, readVector3);
+    }
+    if (f == fields.rotation) {
+      return fieldMessage(in, w, tf.rotation, readQuaternion);
+    }
+    return false;
+  });
+  return tf;
+}
+
+FrameTransformsFieldNumbers resolveFrameTransformsFieldNumbers(const google::protobuf::Descriptor* descriptor) {
+  FrameTransformsFieldNumbers n;  // official defaults
+  n.transforms = fieldNumberOr(descriptor, "transforms", n.transforms);
+  // The inner FrameTransform numbers come from the `transforms` field's message
+  // type, so a renumbered self-describing schema still decodes each transform.
+  const google::protobuf::Descriptor* tf_desc = nestedDescriptor(descriptor, "transforms");
+  n.transform.timestamp = fieldNumberOr(tf_desc, "timestamp", n.transform.timestamp);
+  n.transform.parent_frame_id = fieldNumberOr(tf_desc, "parent_frame_id", n.transform.parent_frame_id);
+  n.transform.child_frame_id = fieldNumberOr(tf_desc, "child_frame_id", n.transform.child_frame_id);
+  n.transform.translation = fieldNumberOr(tf_desc, "translation", n.transform.translation);
+  n.transform.rotation = fieldNumberOr(tf_desc, "rotation", n.transform.rotation);
+  return n;
+}
+
+PJ::Expected<PJ::sdk::FrameTransforms> deserializeFoxgloveFrameTransforms(
+    const uint8_t* data, size_t size, const FrameTransformsFieldNumbers& fields) {
+  if (size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return PJ::unexpected(std::string("foxglove.FrameTransforms: too large"));
+  }
+  CodedInputStream in(data, static_cast<int>(size));
+  in.SetTotalBytesLimit(std::numeric_limits<int>::max());
+  PJ::sdk::FrameTransforms out;
+  uint32_t tag = 0;
+  while ((tag = in.ReadTag()) != 0) {
+    const int f = fieldOf(tag);
+    uint32_t len = 0;
+    if (f == fields.transforms && wireOf(tag) == kWireLen && in.ReadVarint32(&len)) {
+      out.transforms.push_back(readFrameTransform(in, len, fields.transform));
+    } else if (!skipField(in, wireOf(tag))) {
+      return PJ::unexpected(std::string("foxglove.FrameTransforms: malformed"));
+    }
+  }
+  return out;
+}
+
+// ===========================================================================
 // foxglove.Odometry -> sdk::PosesInFrame (single pose)
 // { timestamp=1, frame_id=2, body_frame_id=3, pose=4 Pose, linear_velocity=5,
 //   angular_velocity=6, pose_covariance=7, velocity_covariance=8, metadata=9 }
