@@ -48,6 +48,7 @@ target_compile_features(protobuf_parser_test PRIVATE cxx_std_20)
 target_compile_options(protobuf_parser_test PRIVATE ${PJ_WARNING_FLAGS})
 target_compile_definitions(protobuf_parser_test PRIVATE
   PJ_PROTOBUF_PARSER_PLUGIN_PATH="$<TARGET_FILE:parser_protobuf_plugin>"
+  PJ_PROTOBUF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
 )
 target_link_libraries(protobuf_parser_test PRIVATE
   plotjuggler_sdk::plugin_sdk

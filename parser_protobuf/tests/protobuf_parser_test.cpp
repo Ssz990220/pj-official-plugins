@@ -10,8 +10,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <iostream>
 #include <limits>
 #include <pj_laser_scan/laser_scan_projector.hpp>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -3022,4 +3025,91 @@ TEST(ProtobufParserTest, OutOfOrderFileDescriptorSet) {
   }
   EXPECT_TRUE(found_inner) << "nested demo.Inner.value did not decode (dependency not built)";
   EXPECT_TRUE(found_temp);
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end regression on a REAL SceneUpdate captured from the user's mcap
+// (topic /plan_scene_robot/debug_traj_0/entities): 28 entities, 18 cubes total,
+// each entity in its OWN frame_id. Binds the real 4839-byte FileDescriptorSet and
+// parses the real 5604-byte payload through the loaded dylib, exercising the
+// dependency-ordered descriptor build AND the hand-rolled SceneUpdate wire codec
+// end to end. If the codec truncated after the first entities submessage (a
+// mispopped CodedInputStream limit), the entity/cube counts would come up short.
+#ifndef PJ_PROTOBUF_TEST_DATA_DIR
+#error "PJ_PROTOBUF_TEST_DATA_DIR must be defined"
+#endif
+
+namespace {
+std::string readFixtureBytes(const char* name) {
+  const std::string path = std::string(PJ_PROTOBUF_TEST_DATA_DIR) + "/" + name;
+  std::ifstream in(path, std::ios::binary);
+  EXPECT_TRUE(in.good()) << "cannot open fixture: " << path;
+  std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  return bytes;
+}
+}  // namespace
+
+TEST(ProtobufParserTest, RealSceneUpdate28EntitiesFromUserMcap) {
+  const std::string fds = readFixtureBytes("sceneupdate_schema.fds");
+  const std::string payload = readFixtureBytes("sceneupdate_28ent.bin");
+  ASSERT_EQ(fds.size(), 4839u);
+  ASSERT_EQ(payload.size(), 5604u);
+
+  ProtobufParserFixture f;
+  f.setUp();
+  ASSERT_TRUE(f.bindSchema("foxglove.SceneUpdate", fds))
+      << "binding the real SceneUpdate FileDescriptorSet must succeed cleanly";
+
+  auto* base = static_cast<PJ::MessageParserPluginBase*>(f.handle.context());
+  ASSERT_NE(base, nullptr);
+  const PJ::sdk::BufferAnchor anchor = std::make_shared<std::vector<uint8_t>>();
+  auto rec = base->parseObject(
+      1234, {PJ::Span<const uint8_t>(reinterpret_cast<const uint8_t*>(payload.data()), payload.size()), anchor});
+  ASSERT_TRUE(rec.has_value()) << rec.error();
+
+  const auto* scene = std::any_cast<PJ::sdk::SceneEntities>(&rec->object);
+  ASSERT_NE(scene, nullptr) << "SceneUpdate did not decode to sdk::SceneEntities";
+
+  size_t total_cubes = 0;
+  size_t nonempty_frame_ids = 0;
+  size_t nonempty_ids = 0;
+  std::set<std::string> distinct_frames;
+  std::set<std::string> distinct_ids;
+  for (const auto& e : scene->entities) {
+    total_cubes += e.cubes.size();
+    if (!e.frame_id.empty()) {
+      ++nonempty_frame_ids;
+      distinct_frames.insert(e.frame_id);
+    }
+    if (!e.id.empty()) {
+      ++nonempty_ids;
+      distinct_ids.insert(e.id);
+    }
+  }
+
+  std::cout << "[fixture] entities=" << scene->entities.size() << " cubes=" << total_cubes
+            << " distinct_frame_ids=" << distinct_frames.size() << " distinct_ids=" << distinct_ids.size() << "\n";
+  if (!scene->entities.empty()) {
+    std::cout << "[fixture] entity[0].id='" << scene->entities[0].id << "' frame_id='"
+              << scene->entities[0].frame_id << "'\n";
+    const auto& last = scene->entities.back();
+    std::cout << "[fixture] entity[" << scene->entities.size() - 1 << "].id='" << last.id << "' frame_id='"
+              << last.frame_id << "'\n";
+  }
+
+  // The parser must surface the WHOLE batch — a truncating codec would drop
+  // entities/cubes after the first entities submessage.
+  EXPECT_EQ(scene->entities.size(), 28u) << "all 28 entities must decode (codec must not truncate)";
+  EXPECT_EQ(total_cubes, 18u) << "all 18 cubes across the batch must decode";
+  // String fields are intact (non-empty, and distinct where the capture is
+  // distinct): 28 unique entity ids, 17 frames (some entities share a frame).
+  EXPECT_EQ(nonempty_frame_ids, 28u) << "every entity carries a frame_id";
+  EXPECT_EQ(nonempty_ids, 28u) << "every entity carries an id";
+  EXPECT_EQ(distinct_ids.size(), 28u) << "entity ids intact and unique (no collision/truncation)";
+  EXPECT_EQ(distinct_frames.size(), 17u) << "frame_ids intact (17 distinct across the 28 entities)";
+  // Spot-check exact strings so a byte-level corruption in the codec is caught.
+  EXPECT_EQ(scene->entities.front().id, "left_target@left_gripper-iris@debug_traj_0");
+  EXPECT_EQ(scene->entities.front().frame_id, "left_target@left_wrist_3@debug_traj_0");
+  EXPECT_EQ(scene->entities.back().id, "right_target@right_gripper-iris@debug_traj_0");
+  EXPECT_EQ(scene->entities.back().frame_id, "right_target@right_wrist_3@debug_traj_0");
 }
